@@ -1,19 +1,13 @@
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from app.core.config import settings
 
 _embedding_model = None
 
 def get_embedding_model():
-    global _embedding_model
-    if _embedding_model is None:
-        model_kwargs = {'device': 'cpu'} 
-        encode_kwargs = {'normalize_embeddings': True}
-        _embedding_model = HuggingFaceEmbeddings(
-            model_name=settings.EMBEDDING_MODEL_ID,
-            model_kwargs=model_kwargs,
-            encode_kwargs=encode_kwargs
-        )
-    return _embedding_model
+    return HuggingFaceEndpointEmbeddings(
+        model=settings.EMBEDDING_MODEL_ID,
+        huggingfacehub_api_token=settings.HF_TOKEN,
+    )
 
 def get_embeddings(texts: list[str]) -> list[list[float]]:
 
