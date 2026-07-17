@@ -34,7 +34,7 @@ pip install -r requirements.txt
 Create a `.env` file in the `backend` directory.
 
 ```env
-OPENAI_API_KEY=your_openai_api_key
+GOOGLE_API_KEY=your_google_api_key
 HF_TOKEN=your_huggingface_token
 EMBEDDING_MODEL_ID=your_embedding_model
 
