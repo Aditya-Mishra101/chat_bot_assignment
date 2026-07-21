@@ -41,4 +41,46 @@ export async function sendChatMessage(query, llmBackend) {
   return handleResponse(res);
 }
 
+export async function streamChatMessage(query, llmBackend, onChunk) {
+  const res = await fetch(`${API_BASE_URL}/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      llm_backend: llmBackend,
+    }),
+  });
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = body.detail || detail;
+    } catch {}
+
+    throw new ApiError(detail, res.status);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+
+  let fullText = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) break;
+
+    const chunk = decoder.decode(value, { stream: true });
+
+    fullText += chunk;
+
+    onChunk(fullText);
+  }
+
+  return fullText;
+}
+
 export { ApiError };

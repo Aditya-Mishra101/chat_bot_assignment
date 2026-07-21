@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Header from "../components/Header";
 import ChatWindow from "../components/ChatWindow";
 import ChatInput from "../components/ChatInput";
-import { getHealth, ingestDocuments, sendChatMessage, ApiError } from "../lib/api";
+import { getHealth, ingestDocuments, sendChatMessage, ApiError, streamChatMessage } from "../lib/api";
 
 let idCounter = 0;
 function nextId() {
@@ -63,6 +63,37 @@ export default function Page() {
     }
   }
 
+  async function handleStreamSend(query) {
+    setMessages((prev) => [...prev, { id: nextId(), role: "user", content: query }]);
+    setIsChatting(true);
+  
+    const assistantId = nextId();
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantId, role: "assistant", content: "", streaming: true },
+    ]);
+  
+    try {
+      await streamChatMessage(query, llmBackend, (fullText) => {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantId ? { ...m, content: fullText } : m))
+        );
+      });
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : "Something went wrong.";
+      setMessages((prev) =>
+        prev
+          .filter((m) => m.id !== assistantId)
+          .concat({ id: nextId(), role: "error", content: `Couldn't get a response: ${detail}` })
+      );
+    } finally {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m))
+      );
+      setIsChatting(false);
+    }
+  }
+
   async function handleIngest() {
     setIsIngesting(true);
     try {
@@ -91,7 +122,7 @@ export default function Page() {
         isChatting={isChatting}
       />
       <ChatWindow messages={messages} isChatting={isChatting} />
-      <ChatInput onSend={handleSend} disabled={isChatting} />
+      <ChatInput onSend={handleStreamSend} disabled={isChatting} />
     </main>
   );
 }

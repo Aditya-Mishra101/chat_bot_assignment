@@ -6,6 +6,7 @@ from app.models.schemas import ChatRequest, ChatResponse, IngestResponse, Retrie
 from app.core.retrieval import answer_query
 from app.core.vector_store import collection_count
 from app.core.config import settings
+from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 
@@ -50,4 +51,20 @@ def chat(request: ChatRequest):
         ],
         llm_backend_used=result["llm_backend_used"],
         latency_ms=result["latency_ms"],
+    )
+
+@router.post("/chat/stream")
+def chat_stream(request: ChatRequest):
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty")
+
+    result = answer_query(
+        query=request.query,
+        llm_backend_override=request.llm_backend,
+        stream=True,
+    )
+
+    return StreamingResponse(
+        result["answer"],
+        media_type="text/plain",
     )

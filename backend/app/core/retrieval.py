@@ -3,7 +3,7 @@ import logging
 from app.core.config import settings
 from app.core.embedding import get_query_embedding
 from app.core.vector_store import search_chunks
-from app.core.llm import generate_answer
+from app.core.llm import NO_CONTEXT_TOKEN, generate_answer, generate_streaming
 
 logger = logging.getLogger("rag_retrieval")
 logger.setLevel(logging.INFO)
@@ -14,7 +14,7 @@ if not logger.handlers:
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-def answer_query(query: str, llm_backend_override: str = None, top_k: int = settings.CHUNK) -> dict:
+def answer_query(query: str, llm_backend_override: str = None, top_k: int = settings.CHUNK, stream: bool=False) -> dict:
     start_time = time.perf_counter()
     embed_start = time.perf_counter()
     query_embedding = get_query_embedding(query)
@@ -36,11 +36,19 @@ def answer_query(query: str, llm_backend_override: str = None, top_k: int = sett
     llm_start = time.perf_counter()
     backend_to_use = llm_backend_override or settings.DEFAULT_LLM_BACKEND
 
-    answer = generate_answer(query, context, backend_to_use)
+    if stream:
+        return {
+        "answer": generate_streaming(query, context, backend_to_use),
+        "sources": sources,
+        "llm_backend_used": backend_to_use,
+        "latency_ms": round((time.perf_counter() - start_time) * 1000, 2),
+    }
+    else:
+        answer = generate_answer(query, context, backend_to_use)
     
-    if answer.strip().upper() == "NO":
+    if NO_CONTEXT_TOKEN in answer.strip().upper():
         answer = "I could not find any relevant information in the provided documents to answer your question."
-        sources=[]
+        sources = []
     
     llm_time = time.perf_counter() - llm_start
     
@@ -51,7 +59,7 @@ def answer_query(query: str, llm_backend_override: str = None, top_k: int = sett
     logger.info(f"Latency -> Embed: {embed_time*1000:.2f}ms, Retrieve: {retrieve_time*1000:.2f}ms, LLM: {llm_time*1000:.2f}ms, Total: {total_time_ms}ms")
     for s in sources:
         logger.info(f"Retrieved Score: {s['similarity_score']:.4f} | Source: {s.get('metadata', {}).get('source')}")
-        
+    print(context)
     return {
         "answer": answer,
         "sources": sources,
