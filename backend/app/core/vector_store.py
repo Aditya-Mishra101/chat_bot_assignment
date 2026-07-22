@@ -12,9 +12,7 @@ def get_qdrant_client() -> QdrantClient:
 
 def delete_collection(collection_name: str):
     client = get_qdrant_client()
-
     collections = client.get_collections().collections
-
     if any(c.name == collection_name for c in collections):
         client.delete_collection(collection_name)
         print(f"Deleted collection: {collection_name}")
@@ -25,10 +23,17 @@ def ensure_collection(collection_name: str, vector_size: int = 768):
     if not any(c.name == collection_name for c in collections):
         client.create_collection(
             collection_name=collection_name,
-            vectors_config=models.VectorParams(
-                size=vector_size,
-                distance=models.Distance.COSINE
-            ),
+            vectors_config={
+                "dense": models.VectorParams(
+                    size=vector_size,
+                    distance=models.Distance.COSINE,
+                )
+            },
+            sparse_vectors_config={
+                "sparse": models.SparseVectorParams(
+                    index=models.SparseIndexParams(on_disk=False)
+                )
+            },
             quantization_config=models.ScalarQuantization(
                 scalar=models.ScalarQuantizationConfig(
                     type=models.ScalarType.INT8,
@@ -37,37 +42,79 @@ def ensure_collection(collection_name: str, vector_size: int = 768):
             )
         )
 
-def upsert_chunks(collection_name: str, chunks: list[str], embeddings: list[list[float]], metadatas: list[dict]):
+def upsert_chunks(
+    collection_name: str,
+    chunks: list[str],
+    embeddings: list[list[float]],
+    metadatas: list[dict],
+    sparse_embeddings: list = None,
+):
     client = get_qdrant_client()
-    
     import uuid
-    points = [
-        models.PointStruct(
-            id=str(uuid.uuid4()),
-            vector=embedding,
-            payload={"text": chunk, **metadata}
+
+    points = []
+    for i, (chunk, embedding, metadata) in enumerate(zip(chunks, embeddings, metadatas)):
+        vector = {"dense": embedding}
+        if sparse_embeddings is not None:
+            sparse = sparse_embeddings[i]
+            vector["sparse"] = models.SparseVector(
+                indices=sparse.indices.tolist(),
+                values=sparse.values.tolist(),
+            )
+        points.append(
+            models.PointStruct(
+                id=str(uuid.uuid4()),
+                vector=vector,
+                payload={"text": chunk, **metadata}
+            )
         )
-        for chunk, embedding, metadata in zip(chunks, embeddings, metadatas)
-    ]
-    
-    client.upsert(
-        collection_name=collection_name,
-        points=points
-    )
+
+    client.upsert(collection_name=collection_name, points=points)
 
 def search_chunks(
     collection_name: str,
     query_embedding: list[float],
     top_k: int = settings.CHUNK,
+    query_sparse_embedding=None,
 ) -> list[dict]:
+    """
+    If query_sparse_embedding is provided, runs hybrid search (dense + sparse)
+    fused via Reciprocal Rank Fusion. Otherwise falls back to dense-only search
+    (keeps this function backward compatible if called without sparse).
+    """
     client = get_qdrant_client()
 
-    response = client.query_points(
-        collection_name=collection_name,
-        query=query_embedding,
-        limit=top_k,
-        with_payload=True,
-    )
+    if query_sparse_embedding is not None:
+        sparse_vec = models.SparseVector(
+            indices=query_sparse_embedding.indices.tolist(),
+            values=query_sparse_embedding.values.tolist(),
+        )
+        response = client.query_points(
+            collection_name=collection_name,
+            prefetch=[
+                models.Prefetch(
+                    query=query_embedding,
+                    using="dense",
+                    limit=top_k * 2, 
+                ),
+                models.Prefetch(
+                    query=sparse_vec,
+                    using="sparse",
+                    limit=top_k * 2,
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=top_k,
+            with_payload=True,
+        )
+    else:
+        response = client.query_points(
+            collection_name=collection_name,
+            query=query_embedding,
+            using="dense",
+            limit=top_k,
+            with_payload=True,
+        )
 
     return [
         {
