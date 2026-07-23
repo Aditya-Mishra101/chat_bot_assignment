@@ -60,11 +60,13 @@ async def answer_query(
     # ── Embedding + Retrieval, tracked PER QUERY (not flattened) ──
     embed_start = time.perf_counter()
 
+    from app.core.embedding import get_embeddings, get_sparse_embeddings
+    dense_embs = get_embeddings(queries_to_run)
+    sparse_embs = get_sparse_embeddings(queries_to_run)
+
     per_query_candidates: dict[str, list[dict]] = {}
 
-    for q in queries_to_run:
-        emb = get_query_embedding(q)
-        sparse_emb = get_query_sparse_embedding(q)
+    for q, emb, sparse_emb in zip(queries_to_run, dense_embs, sparse_embs):
         per_query_candidates[q] = (emb, sparse_emb)
 
     embed_time = time.perf_counter() - embed_start
@@ -118,7 +120,7 @@ async def answer_query(
 
     if settings.DEBUG:
         debug_info["reranking"] = {
-            "input_chunks": len(all_candidates_flat),
+            "input_chunks": len(candidates) if not is_decomposed else sum(len(_deduplicate_chunks(grouped_candidates.get(q, []))) for q in queries_to_run),
             "output_chunks": len(sources),
             "strategy": "per_subquestion" if is_decomposed else "pooled",
             "scores": [

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     API_MODEL_NAME:str
     OLLAMA_BASE_URL:str
     OLLAMA_MODEL_NAME:str
+    OLLAMA_OPTIMIZER_MODEL_NAME:str = ""
     SPARSE_EMBEDDING_MODEL: str
     TEMPERATURE:float
     CHUNK:int

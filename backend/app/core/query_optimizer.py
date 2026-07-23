@@ -132,39 +132,25 @@ async def optimize_query(query: str) -> dict:
     """
     debug_info = {"original_query": query, "optimizations_applied": []}
 
-    tasks = {}
-    if settings.ENABLE_MULTI_QUERY:
-        tasks["multi_query"] = multi_query_expand_async(query)
-    if settings.ENABLE_DECOMPOSITION:
-        tasks["decomposition"] = decompose_query_async(query)
-
-    results = {}
-    if tasks:
-        gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        results = dict(zip(tasks.keys(), gathered))
-
     queries = [query]
-
     decomposed = False
-    if "decomposition" in results:
-        if isinstance(results["decomposition"], Exception):
-            logger.warning(f"Query decomposition failed: {results['decomposition']}")
-        else:
-            sub_qs = results["decomposition"]
+
+    try:
+        if settings.ENABLE_DECOMPOSITION and _looks_multi_part(query):
+            sub_qs = await decompose_query_async(query)
             if len(sub_qs) > 1:
                 queries = sub_qs
                 decomposed = True
                 debug_info["optimizations_applied"].append("decomposition")
                 debug_info["sub_questions"] = sub_qs
-
-    if "multi_query" in results and not decomposed:
-        if isinstance(results["multi_query"], Exception):
-            logger.warning(f"Multi-query expansion failed: {results['multi_query']}")
-        else:
-            expanded = results["multi_query"]
-            queries.extend(expanded)
-            debug_info["optimizations_applied"].append("multi_query")
-            debug_info["expanded_queries"] = expanded
+        elif settings.ENABLE_MULTI_QUERY:
+            expanded = await multi_query_expand_async(query)
+            if expanded:
+                queries.extend(expanded)
+                debug_info["optimizations_applied"].append("multi_query")
+                debug_info["expanded_queries"] = expanded
+    except Exception as e:
+        logger.warning(f"Query optimization failed: {e}")
 
     seen = set()
     unique_queries = []

@@ -17,6 +17,7 @@ prompt = ChatPromptTemplate.from_messages([
 Rules:
 - Answer ONLY using the CONTEXT below. Do not use prior knowledge.
 - If multiple context chunks are relevant, synthesize them into a coherent answer.
+- If the user asks multiple questions, ensure you answer ALL of them.
 - Cite sources inline after each key claim as [Source: filename]. Use the source name from the chunk metadata, without file extension or chunk numbers.
 - Keep answers focused and well-structured. Use bullet points for lists.
 - If the context does not contain enough information to answer, respond with exactly: [[NO_CONTEXT]]
@@ -97,9 +98,17 @@ def get_optimizer_llm():
     backend, since these are simple rephrase/split tasks, not deep reasoning."""
     global _optimizer_llm
     if _optimizer_llm is None:
-        _optimizer_llm = ChatOllama(
-            base_url=settings.OLLAMA_BASE_URL,
-            model=settings.OLLAMA_MODEL_NAME,
-            temperature=0.0
-        )
+        if settings.DEFAULT_LLM_BACKEND == "api":
+            _optimizer_llm = ChatGoogleGenerativeAI(
+                model=settings.API_MODEL_NAME,
+                api_key=settings.GOOGLE_API_KEY,
+                temperature=0.0
+            )
+        else:
+            opt_model = settings.OLLAMA_OPTIMIZER_MODEL_NAME or settings.OLLAMA_MODEL_NAME
+            _optimizer_llm = ChatOllama(
+                base_url=settings.OLLAMA_BASE_URL,
+                model=opt_model,
+                temperature=0.0
+            )
     return _optimizer_llm
