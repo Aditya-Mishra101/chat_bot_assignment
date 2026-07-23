@@ -42,80 +42,91 @@ async def answer_query(
     start_time = time.perf_counter()
     debug_info = {} if settings.DEBUG else None
 
-    # Resolve config defaults
     retrieve_k = retrieve_k or settings.RETRIEVE_K
     rerank_top_n = rerank_top_n or settings.RERANK_TOP_N
     backend_to_use = llm_backend_override or settings.DEFAULT_LLM_BACKEND
 
-    # ── Query optimization ──
     opt_start = time.perf_counter()
     opt_result = await optimize_query(query)
     opt_time = time.perf_counter() - opt_start
 
     queries_to_run = opt_result["queries"]
-    hyde_text = opt_result["hyde_text"]
+    is_decomposed = opt_result["decomposed"]
 
     if settings.DEBUG:
         debug_info["query_optimization"] = opt_result["debug_info"]
         debug_info["query_optimization"]["latency_ms"] = round(opt_time * 1000, 2)
 
-    # ── Embedding ──
+    # ── Embedding + Retrieval, tracked PER QUERY (not flattened) ──
     embed_start = time.perf_counter()
 
-    # Embed all queries (original + expanded)
-    all_embeddings = []
-    all_sparse_embeddings = []
-    for q in queries_to_run:
-        all_embeddings.append(get_query_embedding(q))
-        all_sparse_embeddings.append(get_query_sparse_embedding(q))
+    per_query_candidates: dict[str, list[dict]] = {}
 
-    # If HyDE is active, also embed the hypothetical passage
-    if hyde_text:
-        all_embeddings.append(get_query_embedding(hyde_text))
-        all_sparse_embeddings.append(get_query_sparse_embedding(hyde_text))
+    for q in queries_to_run:
+        emb = get_query_embedding(q)
+        sparse_emb = get_query_sparse_embedding(q)
+        per_query_candidates[q] = (emb, sparse_emb)
 
     embed_time = time.perf_counter() - embed_start
 
-    # ── Retrieval (run for each query, then deduplicate) ──
     retrieve_start = time.perf_counter()
 
-    all_candidates = []
-    for emb, sparse_emb in zip(all_embeddings, all_sparse_embeddings):
+    grouped_candidates: dict[str, list[dict]] = {}
+    all_candidates_flat = []
+
+    for q, (emb, sparse_emb) in per_query_candidates.items():
         candidates = search_chunks(
             collection_name=settings.COLLECTION_NAME,
             query_embedding=emb,
             top_k=retrieve_k,
             query_sparse_embedding=sparse_emb,
         )
-        all_candidates.extend(candidates)
+        grouped_candidates[q] = candidates
+        all_candidates_flat.extend(candidates)
 
-    # Deduplicate across query variants
-    candidates = _deduplicate_chunks(all_candidates)
     retrieve_time = time.perf_counter() - retrieve_start
 
     if settings.DEBUG:
         debug_info["retrieval"] = {
-            "queries_run": len(all_embeddings),
-            "total_candidates_before_dedup": len(all_candidates),
-            "candidates_after_dedup": len(candidates),
+            "queries_run": len(queries_to_run),
+            "total_candidates_before_dedup": len(all_candidates_flat),
+            "candidates_after_dedup": len(_deduplicate_chunks(all_candidates_flat)),
         }
 
     # ── Reranking ──
+    # Decomposition = different topics → rerank each sub-question separately
+    # Multi-query / single = same topic → pool all candidates, rerank once
     rerank_start = time.perf_counter()
-    sources = rerank_chunks(query, candidates, top_n=rerank_top_n)
+
+    if is_decomposed:
+        per_question_top_n = max(1, rerank_top_n // len(queries_to_run))
+        merged = []
+        seen_texts = set()
+        for q in queries_to_run:
+            candidates_for_q = _deduplicate_chunks(grouped_candidates.get(q, []))
+            top_for_q = rerank_chunks(q, candidates_for_q, top_n=per_question_top_n)
+            for chunk in top_for_q:
+                if chunk["text"] not in seen_texts:
+                    seen_texts.add(chunk["text"])
+                    merged.append(chunk)
+        sources = merged
+    else:
+        candidates = _deduplicate_chunks(all_candidates_flat)
+        sources = rerank_chunks(query, candidates, top_n=rerank_top_n)
+
     rerank_time = time.perf_counter() - rerank_start
 
     if settings.DEBUG:
         debug_info["reranking"] = {
-            "input_chunks": len(candidates),
+            "input_chunks": len(all_candidates_flat),
             "output_chunks": len(sources),
+            "strategy": "per_subquestion" if is_decomposed else "pooled",
             "scores": [
-                {"score": round(s["rerank_score"], 4), "source": s.get("metadata", {}).get("source")}
+                {"score": round(s.get("rerank_score", 0), 4), "source": s.get("metadata", {}).get("source")}
                 for s in sources
             ],
         }
 
-    # ── Build context (Block 3) ──
     context_texts = []
     for i, s in enumerate(sources, 1):
         meta = s.get("metadata", {})
@@ -124,15 +135,10 @@ async def answer_query(
         context_texts.append(f"--- Chunk {i} ---\nSource: {source_name} {f'Page: {page}' if page else ''}\n{s['text']}\n")
     context = "\n".join(context_texts)
 
-    # ── LLM generation ──
     llm_start = time.perf_counter()
-
 
     if stream:
         answer_gen = generate_streaming(query, context, backend_to_use)
-
-        # For streaming, we add the turn after we know it's not NO_CONTEXT
-        # (the streaming handler replaces the token inline)
         result = {
             "answer": answer_gen,
             "sources": sources,
@@ -142,8 +148,6 @@ async def answer_query(
         if settings.DEBUG:
             result["debug"] = debug_info
         return result
-
-    # Non-streaming path
 
     answer = generate_answer(query, context, backend_to_use)
 
@@ -155,15 +159,14 @@ async def answer_query(
     total_time = time.perf_counter() - start_time
     total_time_ms = round(total_time * 1000, 2)
 
-    logger.info(f"Query: '{query}' | Backend: {backend_to_use} | Candidates: {len(candidates)} | Reranked to: {len(sources)}")
+    logger.info(f"Query: '{query}' | Backend: {backend_to_use} | Reranked to: {len(sources)}")
     logger.info(
         f"Latency -> Embed: {embed_time*1000:.2f}ms, Retrieve: {retrieve_time*1000:.2f}ms, "
         f"Rerank: {rerank_time*1000:.2f}ms, LLM: {llm_time*1000:.2f}ms, Total: {total_time_ms}ms"
     )
     for s in sources:
         logger.info(
-            f"Rerank Score: {s['rerank_score']:.4f} | Fusion Score: {s['similarity_score']:.4f} "
-            f"| Source: {s.get('metadata', {}).get('source')}"
+            f"Rerank Score: {s.get('rerank_score', 0):.4f} | Source: {s.get('metadata', {}).get('source')}"
         )
 
     if settings.DEBUG:

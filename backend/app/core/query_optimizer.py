@@ -1,8 +1,7 @@
 """
 Query optimization strategies for improving RAG retrieval quality.
 
-Supports three strategies (all toggleable via config):
-  - HyDE: Generate a hypothetical answer, embed it for better vector similarity
+Supports two strategies (toggleable via config):
   - Multi-Query: Rephrase the query 2-3 ways to improve recall
   - Decomposition: Split multi-part questions into sub-questions
 """
@@ -11,22 +10,12 @@ import asyncio
 import logging
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from app.core.llm import get_optimizer_llm
 
 from app.core.config import settings
 
 logger = logging.getLogger("rag_query_optimizer")
 
-
-_hyde_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "You are a document content predictor. Given a question, write a short "
-        "paragraph (3-4 sentences) that a document might contain as the answer. "
-        "Do NOT answer the question yourself — imagine what a relevant document passage would say. "
-        "Be specific and factual in tone.",
-    ),
-    ("human", "{query}"),
-])
 
 _multi_query_prompt = ChatPromptTemplate.from_messages([
     (
@@ -46,19 +35,20 @@ _decomposition_prompt = ChatPromptTemplate.from_messages([
         "You are a question decomposer. Given a complex or multi-part question, "
         "break it into simpler, independent sub-questions that can each be answered "
         "separately from a document corpus.\n"
-        "If the question is already simple and single-part, return it as-is.\n"
+        "A question is multi-part ONLY if it explicitly asks about multiple distinct "
+        "things (e.g. joined by 'and', containing multiple question marks, or asking "
+        "about clearly separate topics). Requests like 'summarize X', 'tell me about X', "
+        "'explain X', or any single question about one topic are SINGLE-PART, even if "
+        "answering them requires covering multiple aspects (plot, theme, characters, etc.) "
+        "— do NOT split these into multiple sub-questions.\n"
+        "Only split the question into the parts EXPLICITLY asked by the user — "
+        "do not invent, infer, or add any additional sub-questions the user did "
+        "not ask.\n"
+        "If the question is single-part, return it as-is (just one line, unchanged).\n"
         "Return ONLY the sub-questions, one per line, numbered 1-N.",
     ),
     ("human", "{query}"),
 ])
-
-
-def _get_optimizer_llm():
-    """Get a lightweight LLM instance for query optimization tasks.
-    Plain sync function — get_llm just constructs a client object,
-    it doesn't need to be async."""
-    from app.core.llm import get_optimizer_llm
-    return get_optimizer_llm()
 
 
 def _parse_numbered_lines(raw: str, max_items: int | None = None) -> list[str]:
@@ -78,19 +68,33 @@ def _parse_numbered_lines(raw: str, max_items: int | None = None) -> list[str]:
     return items[:max_items] if max_items else items
 
 
-async def hyde_expand_async(query: str) -> str:
-    llm = _get_optimizer_llm()
-    chain = _hyde_prompt | llm | StrOutputParser()
-    hypothetical = await chain.ainvoke({"query": query})
+def _looks_multi_part(query: str) -> bool:
+    """Heuristic pre-filter: only send a query to the decomposition LLM if it
+    genuinely shows signs of asking multiple distinct things. Small local
+    models unreliably follow prompt-only constraints against over-decomposing
+    single-topic requests like 'summarize X' — this guard prevents wasted
+    LLM calls AND prevents fabricated sub-questions from polluting retrieval."""
+    q = query.lower().strip()
 
-    if settings.DEBUG:
-        logger.info(f"[DEBUG] HyDE hypothetical passage:\n{hypothetical[:300]}")
+    single_part_signals = (
+        q.startswith((
+            "summarize", "summarise", "tell me about", "explain",
+            "describe", "what is", "who is", "what are", "give me a summary",
+        ))
+    )
+    multi_signals = (
+        q.count("?") > 1
+        or (" and " in q and "who" in q or " and " in q and "what" in q or " and " in q and "why" in q)
+    )
 
-    return hypothetical
+    if single_part_signals and q.count("?") <= 1:
+        return False
+
+    return multi_signals
 
 
 async def multi_query_expand_async(query: str) -> list[str]:
-    llm = _get_optimizer_llm()
+    llm = get_optimizer_llm()
     chain = _multi_query_prompt | llm | StrOutputParser()
     raw = await chain.ainvoke({"query": query})
 
@@ -103,7 +107,12 @@ async def multi_query_expand_async(query: str) -> list[str]:
 
 
 async def decompose_query_async(query: str) -> list[str]:
-    llm = _get_optimizer_llm()
+    if not _looks_multi_part(query):
+        if settings.DEBUG:
+            logger.info(f"[DEBUG] Skipping decomposition — query doesn't look multi-part: {query}")
+        return [query]
+
+    llm = get_optimizer_llm()
     chain = _decomposition_prompt | llm | StrOutputParser()
     raw = await chain.ainvoke({"query": query})
 
@@ -119,14 +128,11 @@ async def optimize_query(query: str) -> dict:
     """
     Run all enabled query optimization strategies IN PARALLEL and return:
       - "queries": list of queries to run retrieval on
-      - "hyde_text": hypothetical passage (or None)
       - "debug_info": dict of optimization steps performed
     """
     debug_info = {"original_query": query, "optimizations_applied": []}
 
     tasks = {}
-    if settings.ENABLE_HYDE:
-        tasks["hyde"] = hyde_expand_async(query)
     if settings.ENABLE_MULTI_QUERY:
         tasks["multi_query"] = multi_query_expand_async(query)
     if settings.ENABLE_DECOMPOSITION:
@@ -137,16 +143,7 @@ async def optimize_query(query: str) -> dict:
         gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
         results = dict(zip(tasks.keys(), gathered))
 
-    hyde_text = None
     queries = [query]
-
-    if "hyde" in results:
-        if isinstance(results["hyde"], Exception):
-            logger.warning(f"HyDE expansion failed: {results['hyde']}")
-        else:
-            hyde_text = results["hyde"]
-            debug_info["optimizations_applied"].append("hyde")
-            debug_info["hyde_passage"] = hyde_text[:300]
 
     decomposed = False
     if "decomposition" in results:
@@ -160,8 +157,6 @@ async def optimize_query(query: str) -> dict:
                 debug_info["optimizations_applied"].append("decomposition")
                 debug_info["sub_questions"] = sub_qs
 
-    # Only fold in multi-query rephrasings if decomposition didn't already
-    # split the question — avoids inflating retrieval/rerank breadth.
     if "multi_query" in results and not decomposed:
         if isinstance(results["multi_query"], Exception):
             logger.warning(f"Multi-query expansion failed: {results['multi_query']}")
@@ -186,6 +181,6 @@ async def optimize_query(query: str) -> dict:
 
     return {
         "queries": unique_queries,
-        "hyde_text": hyde_text,
+        "decomposed": decomposed,
         "debug_info": debug_info,
     }

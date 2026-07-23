@@ -9,7 +9,6 @@ from app.core.config import settings
 
 logger = logging.getLogger("rag_llm")
 
-# ── Standard RAG prompt (no memory) ──
 prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -93,14 +92,14 @@ def generate_streaming(query: str, context: str, backend: str):
 _optimizer_llm = None
 
 def get_optimizer_llm():
+    """Lightweight LLM dedicated to query optimization tasks (HyDE, multi-query,
+    decomposition) — deliberately smaller/cheaper than the main generation
+    backend, since these are simple rephrase/split tasks, not deep reasoning."""
     global _optimizer_llm
     if _optimizer_llm is None:
-        endpoint = HuggingFaceEndpoint(
-            repo_id="Qwen/Qwen2.5-1.5B-Instruct",
-            provider="featherless-ai",
-            huggingfacehub_api_token=settings.HF_TOKEN,
-            max_new_tokens=256,
-            temperature=0.2,
+        _optimizer_llm = ChatOllama(
+            base_url=settings.OLLAMA_BASE_URL,
+            model=settings.OLLAMA_MODEL_NAME,
+            temperature=0.0
         )
-        _optimizer_llm = ChatHuggingFace(llm=endpoint)
     return _optimizer_llm

@@ -29,7 +29,7 @@ def get_sparse_model() -> SparseTextEmbedding:
     won't align and hybrid search will silently return garbage."""
     global _sparse_model
     if _sparse_model is None:
-        _sparse_model = SparseTextEmbedding(model_name="Qdrant/bm25")
+        _sparse_model = SparseTextEmbedding(model_name=settings.SPARSE_EMBEDDING_MODEL)
     return _sparse_model
 
 def get_sparse_embeddings(texts: list[str]):
