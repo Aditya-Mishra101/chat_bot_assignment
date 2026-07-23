@@ -30,11 +30,11 @@ def ingest():
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+async def chat(request: ChatRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
 
-    result = answer_query(
+    result = await answer_query(
         query=request.query,
         llm_backend_override=request.llm_backend,
     )
@@ -51,14 +51,15 @@ def chat(request: ChatRequest):
         ],
         llm_backend_used=result["llm_backend_used"],
         latency_ms=result["latency_ms"],
+        debug=result.get("debug"),
     )
 
 @router.post("/chat/stream")
-def chat_stream(request: ChatRequest):
+async def chat_stream(request: ChatRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
 
-    result = answer_query(
+    result = await answer_query(
         query=request.query,
         llm_backend_override=request.llm_backend,
         stream=True,

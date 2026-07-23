@@ -8,13 +8,14 @@ class RetrievedChunk(BaseModel):
 
 class ChatRequest(BaseModel):
     query: str = Field(..., description="User query")
-    llm_backend: Optional[Literal["api", "ollama"]]
+    llm_backend: Optional[Literal["api", "ollama"]] = None
 
 class ChatResponse(BaseModel):
     answer: str
     sources: List[RetrievedChunk]
     llm_backend_used: str
     latency_ms: float
+    debug: Optional[Dict[str, Any]] = Field(None, description="Debug info (only present when DEBUG=true)")
 
 class IngestResponse(BaseModel):
     status: str

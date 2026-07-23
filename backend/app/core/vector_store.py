@@ -95,12 +95,12 @@ def search_chunks(
                 models.Prefetch(
                     query=query_embedding,
                     using="dense",
-                    limit=top_k * 2, 
+                    limit=top_k * 4, 
                 ),
                 models.Prefetch(
                     query=sparse_vec,
                     using="sparse",
-                    limit=top_k * 2,
+                    limit=top_k * 4,
                 ),
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),

@@ -17,4 +17,17 @@ class Settings(BaseSettings):
     TEMPERATURE: float
     CHUNK: int
 
+    # ── Retrieval tuning ──
+    RETRIEVE_K: int
+    RERANK_TOP_N: int
+    RERANK_SCORE_THRESHOLD: float
+
+    # ── Query optimization feature flags ──
+    ENABLE_HYDE: bool
+    ENABLE_MULTI_QUERY: bool
+    ENABLE_DECOMPOSITION: bool
+
+    # ── Debug ──
+    DEBUG: bool = True
+
 settings = Settings()

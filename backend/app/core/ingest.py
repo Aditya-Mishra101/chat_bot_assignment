@@ -37,7 +37,7 @@ def run_ingestion() -> dict:
         get_embedding_model(),
         buffer_size=2,
         breakpoint_threshold_type="percentile",
-        breakpoint_threshold_amount=90,
+        breakpoint_threshold_amount=75,
         min_chunk_size=200
     )
     chunks = text_splitter.split_documents(docs)
