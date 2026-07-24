@@ -105,10 +105,9 @@ def get_optimizer_llm():
                 temperature=0.0
             )
         else:
-            opt_model = settings.OLLAMA_OPTIMIZER_MODEL_NAME or settings.OLLAMA_MODEL_NAME
             _optimizer_llm = ChatOllama(
                 base_url=settings.OLLAMA_BASE_URL,
-                model=opt_model,
+                model=settings.OLLAMA_MODEL_NAME,
                 temperature=0.0
             )
     return _optimizer_llm

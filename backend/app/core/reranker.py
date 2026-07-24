@@ -6,13 +6,10 @@ logger = logging.getLogger("rag_reranker")
 
 _reranker_model = None
 
-import torch
-
 def get_reranker_model() -> CrossEncoder:
     global _reranker_model
     if _reranker_model is None:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        _reranker_model = CrossEncoder(settings.RE_RANKER_MODEL, device=device)
+        _reranker_model = CrossEncoder(settings.RE_RANKER_MODEL)
     return _reranker_model
 
 
