@@ -6,6 +6,7 @@ logger = logging.getLogger("rag_reranker")
 
 _reranker_model = None
 
+
 def get_reranker_model() -> CrossEncoder:
     global _reranker_model
     if _reranker_model is None:
@@ -20,17 +21,21 @@ def rerank_chunks(
 ) -> list[dict]:
     """
     Re-ranks retrieved chunks against the query using a cross-encoder
-    and returns the top_n most relevant.
+    and returns the top_n most relevant above the score threshold.
     """
     if not chunks:
         return []
 
     pairs = [(query, c["text"]) for c in chunks]
     model = get_reranker_model()
-    scores = model.predict(pairs)
+    scores = model.predict(pairs, show_progress_bar=False)
 
     for chunk, score in zip(chunks, scores):
         chunk["rerank_score"] = float(score)
 
     reranked = sorted(chunks, key=lambda c: c["rerank_score"], reverse=True)
-    return reranked[:top_n]
+    filtered = [
+        c for c in reranked
+        if c["rerank_score"] >= settings.RERANK_SCORE_THRESHOLD
+    ]
+    return filtered[:top_n]

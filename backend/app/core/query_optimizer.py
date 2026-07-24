@@ -44,6 +44,7 @@ _decomposition_prompt = ChatPromptTemplate.from_messages([
         "Only split the question into the parts EXPLICITLY asked by the user — "
         "do not invent, infer, or add any additional sub-questions the user did "
         "not ask.\n"
+        "Preserve the original wording and named entities in each sub-question.\n"
         "If the question is single-part, return it as-is (just one line, unchanged).\n"
         "Return ONLY the sub-questions, one per line, numbered 1-N.",
     ),
